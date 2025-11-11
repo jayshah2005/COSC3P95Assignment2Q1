@@ -162,7 +162,7 @@ public class Client {
         String host = config.host;
 
         // let the user pass a custom input folder as the first argument
-        Path inDir = Paths.get(args.length > 0 ? args[0] : "client-data");
+        Path inDir = Paths.get(args.length > 0 ? args[0] : "files2transfer");
 
         Client client = new Client(port, host, inDir);
         client.start();
