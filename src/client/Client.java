@@ -5,6 +5,8 @@ import Configs.Config;
 import java.io.*;
 import java.net.Socket;
 import java.nio.file.*;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -63,14 +65,20 @@ public class Client implements Runnable {
 
         System.out.println("Sending file: " + relative + " (" + size + " bytes)");
 
-        // 1) send name
-        out.writeUTF(relative);
 
-        // 2) send size
-        out.writeLong(size);
+        try {
+            // 1. Calculate checksum
+            String checksum = calculateChecksum(file.toFile());
+            out.writeUTF(checksum);
 
-        // 3) send bytes in chunks
-        try (InputStream in = new BufferedInputStream(Files.newInputStream(file))) {
+            // 2. send name
+            out.writeUTF(relative);
+
+            // 3. send size
+            out.writeLong(size);
+
+            // 4. send bytes in chunks
+            InputStream in = new BufferedInputStream(Files.newInputStream(file));
             byte[] buffer = new byte[8192];
             long remaining = size;
 
@@ -83,9 +91,29 @@ public class Client implements Runnable {
                 out.write(buffer, 0, read);
                 remaining -= read;
             }
+        } catch (NoSuchAlgorithmException e) {
+            throw new RuntimeException(e);
         }
 
         out.flush();
         System.out.println("Finished sending: " + relative);
+    }
+
+    private static String calculateChecksum(File file) throws IOException, NoSuchAlgorithmException {
+        MessageDigest digest = MessageDigest.getInstance("SHA-256");
+        try (InputStream fis = new FileInputStream(file)) {
+            byte[] buffer = new byte[4096];
+            int bytesRead;
+            while ((bytesRead = fis.read(buffer)) != -1) {
+                digest.update(buffer, 0, bytesRead);
+            }
+        }
+        return bytesToHex(digest.digest());
+    }
+
+    private static String bytesToHex(byte[] bytes) {
+        StringBuilder sb = new StringBuilder();
+        for (byte b : bytes) sb.append(String.format("%02x", b));
+        return sb.toString();
     }
 }
