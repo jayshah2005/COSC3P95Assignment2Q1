@@ -155,7 +155,7 @@ public class ServerThread implements Runnable {
             fileSpan.addEvent("decompression_start");
             byte[] decompressedData = decompress(compressedData);
             fileSpan.addEvent("decompression_end");
-            fileSpan.setAttribute("file.decrompressed_size", decompressedData.length);
+            fileSpan.setAttribute("file.decompressed_size", decompressedData.length);
 
 
             // 4) Write decompressed data to disk
