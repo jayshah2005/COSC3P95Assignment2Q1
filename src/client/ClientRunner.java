@@ -1,6 +1,9 @@
 package client;
 
 import Configs.Config;
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.api.trace.Tracer;
+import telemetry.TelemetryConfig;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -83,6 +86,19 @@ public class ClientRunner {
         int port = config.port;
         String host = config.host;
         Path inDir = Paths.get(args.length > 0 ? args[0] : "files2transfer");
+
+
+        /**
+         * OpenTelemtry init for CLIENT
+         * 1.0 = AlwaysOn sampling
+         */
+        TelemetryConfig.init("file-server", 1.0); // AlwaysOn for now
+
+        // Tiny test span just to prove it works
+        Tracer tracer = TelemetryConfig.tracer();
+        Span startup = tracer.spanBuilder("server.startup_test").startSpan();
+        startup.end();
+
 
         ClientRunner cl = new ClientRunner(port, host, inDir);
 

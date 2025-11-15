@@ -2,6 +2,14 @@ package server;
 
 import Configs.Config;
 
+import telemetry.TelemetryConfig;
+import io.opentelemetry.api.trace.Tracer;
+import io.opentelemetry.api.trace.Span;
+
+
+//import io.opentelemetry.api.OpenTelemetry;
+
+
 import java.io.*;
 import java.net.ServerSocket;
 import java.net.Socket;
@@ -64,6 +72,20 @@ public class FileServer {
 
         int port = config.port;
         Path outDir = Paths.get(args.length > 1 ? args[1] : "server-out");
+
+
+        /**
+         * OpenTelemtry init for CLIENT
+         * 1.0 = AlwaysOn sampling
+         */
+        TelemetryConfig.init("file-server", 1.0); // AlwaysOn for now
+
+        // Tiny test span just to prove it works
+        Tracer tracer = TelemetryConfig.tracer();
+        Span startup = tracer.spanBuilder("server.startup_test").startSpan();
+        startup.end();
+
+
 
         // create server instance and start it
         FileServer server = new FileServer(port, outDir);
