@@ -9,6 +9,12 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.zip.GZIPInputStream;
 
+import telemetry.TelemetryConfig;
+import io.opentelemetry.api.trace.Tracer;
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.context.Scope;
+import io.opentelemetry.api.trace.StatusCode;
+
 /**
  * A thread to handle a client
  */
@@ -28,10 +34,19 @@ public class ServerThread implements Runnable {
      */
     @Override
     public void run() {
-        try (
-                Socket s = this.socket;   // auto-close socket
-                DataInputStream in = new DataInputStream(
-                        new BufferedInputStream(s.getInputStream()))
+        Tracer tracer = TelemetryConfig.tracer();
+
+
+        // Span for the whole
+        Span connectionSpan = tracer.spanBuilder("client.sent_file_session")
+                .setAttribute("client.address", socket.getRemoteSocketAddress().toString())
+                .startSpan();
+
+
+        try (Scope connScope = connectionSpan.makeCurrent();
+             Socket s = this.socket;   // auto-close socket
+             DataInputStream in = new DataInputStream(
+                     new BufferedInputStream(s.getInputStream()))
         ) {
             while (true) {
                 // --- Read metadata ---
@@ -40,6 +55,7 @@ public class ServerThread implements Runnable {
 
                 // Empty path = client finished
                 if (relPath.isEmpty()) {
+                    connectionSpan.addEvent("client_termination_signal");
                     System.out.println("[Server] Client sent termination signal.");
                     break;
                 }
@@ -53,12 +69,20 @@ public class ServerThread implements Runnable {
             System.out.println("[Server] Client finished.");
 
         } catch (EOFException eof) {
+            connectionSpan.addEvent("client_eof");
+            connectionSpan.recordException(eof);
             System.out.println("[Server] Client disconnected normally.");
         } catch (SocketException se) {
+            connectionSpan.recordException(se);
+            connectionSpan.setStatus(StatusCode.ERROR, se.getMessage());
             System.out.println("[Server] Connection reset by client.");
         } catch (Exception e) {
+            connectionSpan.recordException(e);
+            connectionSpan.setStatus(StatusCode.ERROR, e.getMessage());
             System.out.println("[Server] Unexpected error: " + e.getMessage());
             e.printStackTrace();
+        } finally {
+            connectionSpan.end();
         }
     }
 
@@ -73,50 +97,127 @@ public class ServerThread implements Runnable {
      */
     private void saveFile(DataInputStream in, String relPath, long size, String expectedChecksum) throws IOException {
 
-        // 0) Resolve and validate output path
-        Path target = outputDir.resolve(relPath).normalize();
+        Tracer tracer = TelemetryConfig.tracer();
 
-        if (!target.startsWith(outputDir)) {
-            throw new IOException("Blocked unsafe path: " + relPath);
-        }
+        Span fileSpan = tracer.spanBuilder("server.receive_file")
+                .setAttribute("file.name", relPath)
+                .setAttribute("file.compressed_size", size)
+                .startSpan();
 
-        if (target.getParent() != null) {
-            Files.createDirectories(target.getParent());
-        }
+        try (Scope fileScope = fileSpan.makeCurrent()) {
+            // 0) Resolve and validate output path
+            Path target = outputDir.resolve(relPath).normalize();
 
-        // 1) Read compressed file data
-        byte[] compressedData = new byte[(int) size];
-        int totalRead = 0;
-
-        while (totalRead < size) {
-            int read = in.read(compressedData, totalRead, (int) (size - totalRead));
-            if (read == -1) {
-                throw new EOFException("Unexpected end of stream while reading compressed data.");
+            if (!target.startsWith(outputDir)) {
+                fileSpan.setStatus(StatusCode.ERROR, "Path outside outputDir");
+                throw new IOException("[Server] Rejecting Path outside output directory: " + target);
             }
-            totalRead += read;
+
+            if (target.getParent() != null) {
+                Files.createDirectories(target.getParent());
+            }
+
+            // 1) Read compressed data
+            fileSpan.addEvent("read_compressed_Start");
+            byte[] compressedData = new byte[(int) size];
+            int totalRead = 0;
+
+            while (totalRead < size) {
+                int read = in.read(compressedData, totalRead, (int) (size - totalRead));
+                if (read == -1) {
+                    throw new EOFException("Unexpected end of stream while reading compressed data.");
+                }
+                totalRead += read;
+            }
+            fileSpan.addEvent("read_compressed_end");
+
+
+            // 2) Verify checksum
+            fileSpan.addEvent("checksum_verification_start");
+            String actualChecksum = calculateChecksum(compressedData);
+
+            if (!actualChecksum.equals(expectedChecksum)) {
+                fileSpan.setAttribute("checksum_ok", false);
+                fileSpan.setStatus(StatusCode.ERROR, "Checksum mismatch");
+                System.out.println("❌ Checksum mismatch! Compressed file may be corrupted.");
+                System.out.println("   Expected: " + expectedChecksum);
+                System.out.println("   Actual:   " + actualChecksum);
+                return;
+            }
+
+            fileSpan.setAttribute("checksum_ok", true);
+            fileSpan.addEvent("checksum_verification_end");
+
+            System.out.println("✅ Checksum verified for: " + relPath);
+
+
+            // 3) Decompress
+            fileSpan.addEvent("decompression_start");
+            byte[] decompressedData = decompress(compressedData);
+            fileSpan.addEvent("decompression_end");
+            fileSpan.setAttribute("file.decrompressed_size", decompressedData.length);
+
+
+            // 4) Write decompressed data to disk
+            fileSpan.addEvent("write_to_disk_start");
+            try (OutputStream out = new BufferedOutputStream(Files.newOutputStream(target))) {
+                out.write(decompressedData);
+            }
+            fileSpan.addEvent("write_to_disk_end");
+
+            System.out.printf("[Server] Saved %s (%d bytes decompressed)%n", relPath, decompressedData.length);
+        } catch (Exception e) {
+            fileSpan.recordException(e);
+            fileSpan.setStatus(StatusCode.ERROR, e.getMessage());
+            throw e;
+        } finally {
+            fileSpan.end();
         }
-
-        // 2) Verify checksum
-        String actualChecksum = calculateChecksum(compressedData);
-
-        if (!actualChecksum.equals(expectedChecksum)) {
-            System.out.println("❌ Checksum mismatch! Compressed file may be corrupted.");
-            System.out.println("   Expected: " + expectedChecksum);
-            System.out.println("   Actual:   " + actualChecksum);
-            return;
-        }
-
-        System.out.println("✅ Checksum verified for: " + relPath);
-
-        // 3) Decompress
-        byte[] decompressedData = decompress(compressedData);
-
-        // 4) Write decompressed data to disk
-        try (OutputStream out = new BufferedOutputStream(Files.newOutputStream(target))) {
-            out.write(decompressedData);
-        }
-
-        System.out.printf("[Server] Saved %s (%d bytes decompressed)%n", relPath, decompressedData.length);
+//
+//        // 0) Resolve and validate output path
+//        Path target = outputDir.resolve(relPath).normalize();
+//
+//        if (!target.startsWith(outputDir)) {
+//            throw new IOException("Blocked unsafe path: " + relPath);
+//        }
+//
+//        if (target.getParent() != null) {
+//            Files.createDirectories(target.getParent());
+//        }
+//
+//        // 1) Read compressed file data
+//        byte[] compressedData = new byte[(int) size];
+//        int totalRead = 0;
+//
+//        while (totalRead < size) {
+//            int read = in.read(compressedData, totalRead, (int) (size - totalRead));
+//            if (read == -1) {
+//                throw new EOFException("Unexpected end of stream while reading compressed data.");
+//            }
+//            totalRead += read;
+//        }
+//
+//        // 2) Verify checksum
+//        String actualChecksum = calculateChecksum(compressedData);
+//
+//        if (!actualChecksum.equals(expectedChecksum)) {
+//            System.out.println("❌ Checksum mismatch! Compressed file may be corrupted.");
+//            System.out.println("   Expected: " + expectedChecksum);
+//            System.out.println("   Actual:   " + actualChecksum);
+//            return;
+//        }
+//
+//        System.out.println("✅ Checksum verified for: " + relPath);
+//
+//        // 3) Decompress
+//        byte[] decompressedData = decompress(compressedData);
+//
+//        // 4) Write decompressed data to disk
+//        try (OutputStream out = new BufferedOutputStream(Files.newOutputStream(target))) {
+//            out.write(decompressedData);
+//        }
+//
+//        System.out.printf("[Server] Saved %s (%d bytes decompressed)%n", relPath, decompressedData.length);
     }
 
     private byte[] decompress(byte[] compressed) throws IOException {
