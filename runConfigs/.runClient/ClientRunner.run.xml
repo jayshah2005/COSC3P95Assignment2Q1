@@ -1,0 +1,10 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="ClientRunner" type="Application" factoryName="Application">
+    <option name="MAIN_CLASS_NAME" value="client.ClientRunner" />
+    <module name="COSC3P95Assignment2" />
+    <option name="VM_PARAMETERS" value="-javaagent:./src/otel/opentelemetry-javaagent.jar -Dotel.service.name=file-client -Dotel.exporter.otlp.endpoint=http://localhost:4317 -Dotel.exporter.otlp.protocol=grpc -Dotel.metrics.exporter=otlp" />
+    <method v="2">
+      <option name="Make" enabled="true" />
+    </method>
+  </configuration>
+</component>
