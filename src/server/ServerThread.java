@@ -38,7 +38,7 @@ public class ServerThread implements Runnable {
 
 
         // Span for the whole
-        Span connectionSpan = tracer.spanBuilder("client.sent_file_session")
+        Span connectionSpan = tracer.spanBuilder("server.handle_connection")
                 .setAttribute("client.address", socket.getRemoteSocketAddress().toString())
                 .startSpan();
 
